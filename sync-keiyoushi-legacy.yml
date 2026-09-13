@@ -1,0 +1,108 @@
+name: Build Legacy Mihon Index
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download official Keiyoushi index
+        run: |
+          curl -L --fail \
+            https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json \
+            -o official-index.json
+
+      - name: Build legacy index.min.json
+        run: |
+          python3 <<'PY'
+          import json
+          from pathlib import Path
+
+          official = json.loads(
+              Path("official-index.json").read_text(encoding="utf-8")
+          )
+
+          result = []
+
+          for ext in official["extensionList"]["extensions"]:
+              package = ext.get("packageName", "")
+              resources = ext.get("resources", {})
+
+              apk_url = resources.get("apkUrl", "")
+              icon_url = resources.get("iconUrl", "")
+
+              if not package or not apk_url:
+                  continue
+
+              sources = []
+              for source in ext.get("sources", []):
+                  item = {
+                      "name": source.get("name", ""),
+                      "lang": source.get("language", ""),
+                      "id": str(source.get("id", "")),
+                      "baseUrl": source.get("homeUrl", "")
+                  }
+
+                  mirrors = source.get("mirrorUrls", [])
+                  if mirrors:
+                      item["baseUrl"] = mirrors[0]
+
+                  sources.append(item)
+
+              if sources:
+                  lang = sources[0].get("lang", "")
+              else:
+                  # Fallback to the language suffix in the package name.
+                  parts = package.split(".")
+                  lang = parts[-2] if len(parts) >= 2 else "all"
+
+              warning = ext.get("contentWarning", "")
+              nsfw = 1 if warning == "CONTENT_WARNING_NSFW" else 0
+
+              legacy = {
+                  "name": ext.get("name", ""),
+                  "pkg": package,
+                  "apk": apk_url,
+                  "lang": lang,
+                  "code": int(ext.get("versionCode", 0)),
+                  "version": str(ext.get("versionName", "")),
+                  "nsfw": nsfw,
+                  "icon": icon_url,
+                  "sources": sources
+              }
+
+              result.append(legacy)
+
+          Path("index.min.json").write_text(
+              json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8"
+          )
+
+          print("Extensions written:", len(result))
+          print("Output: index.min.json")
+          PY
+
+      - name: Remove temporary files
+        run: rm -f official-index.json
+
+      - name: Commit generated index
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add index.min.json
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Build legacy Mihon index from Keiyoushi"
+            git push
+          fi
